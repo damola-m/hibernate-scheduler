@@ -1,0 +1,99 @@
+# ===================================
+# release.yml
+# -----------------------------------
+# - On a v* tag: builds the self-contained single exe, zips it with README + LICENSE,
+#   and publishes a GitHub release with both the exe and the zip attached.
+# - Can also be run by hand from the Actions tab with a tag that already exists.
+# ===================================
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release (e.g. v1.2.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      # =============================
+      # Part 1 — Version from the tag
+      # =============================
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $v = "$env:TAG".TrimStart('v')
+          if ($v -notmatch '^\d+\.\d+\.\d+') { throw "Tag '$env:TAG' isn't a version like v1.2.0" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      # =============================
+      # Part 2 — Publish single exe
+      # =============================
+      - name: Publish
+        shell: pwsh
+        run: >
+          dotnet publish src/HibernateScheduler/HibernateScheduler.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true
+          -p:EnableCompressionInSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:Version=${{ steps.version.outputs.version }}
+          -o out
+
+      # =============================
+      # Part 3 — Package
+      # =============================
+      - name: Package
+        shell: pwsh
+        run: |
+          $zip = "HibernateScheduler-${{ steps.version.outputs.version }}-win-x64.zip"
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item out/HibernateScheduler.exe dist/
+          Compress-Archive -Path out/HibernateScheduler.exe, README.md, LICENSE -DestinationPath "dist/$zip"
+          Get-FileHash dist/* -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content dist/SHA256SUMS.txt
+          Get-ChildItem dist
+
+      # =============================
+      # Part 4 — GitHub release
+      # =============================
+      - name: Create release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @"
+          ## Download
+
+          - **HibernateScheduler.exe**: run it directly.
+          - **HibernateScheduler-${{ steps.version.outputs.version }}-win-x64.zip**: the same exe with the README and licence.
+
+          No .NET install needed. Windows SmartScreen may warn because the app isn't code-signed; choose **More info > Run anyway**.
+
+          Checksums are in SHA256SUMS.txt.
+          "@
+          gh release view $env:TAG 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG dist/* --clobber
+          } else {
+            gh release create $env:TAG dist/* --title "Hibernate Scheduler $env:TAG" --notes $notes --generate-notes
+          }

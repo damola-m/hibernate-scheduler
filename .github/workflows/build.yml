@@ -1,0 +1,31 @@
+# ===================================
+# build.yml
+# -----------------------------------
+# - Builds every pull request and push to main. Required check for merging.
+# ===================================
+
+name: Build
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Read-only token; PRs from forks get nothing more
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Build
+        run: dotnet build src/HibernateScheduler -c Release
